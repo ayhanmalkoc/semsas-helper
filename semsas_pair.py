@@ -683,14 +683,60 @@ def run_command(command, timeout):
         executable=os.environ.get("SHELL") or "/bin/zsh",
     )
 
+def pending_items(payload):
+    pending = payload.get("pending") if isinstance(payload, dict) else []
+    if isinstance(pending, list):
+        return [item for item in pending if isinstance(item, dict)]
+    if isinstance(pending, dict):
+        return [item for item in pending.values() if isinstance(item, dict)]
+    return []
+
+def approve_openclaw_device_id(device_id, timeout):
+    deadline = time.monotonic() + max(1, min(timeout, 120))
+    last_error = "No pending OpenClaw pairing request for this deviceId.\n"
+    while time.monotonic() < deadline:
+        list_proc = run_command("openclaw devices list --json", timeout)
+        if list_proc.returncode != 0:
+            return list_proc
+        try:
+            payload = json.loads(list_proc.stdout or "{}")
+            matches = [item for item in pending_items(payload) if str(item.get("deviceId") or "").strip() == device_id]
+            if not matches:
+                time.sleep(0.5)
+                continue
+            selected = max(matches, key=lambda item: int(item.get("ts") or 0))
+            request_id = str(selected.get("requestId") or "").strip()
+            if not request_id:
+                last_error = "Pending OpenClaw pairing request has no requestId.\n"
+                time.sleep(0.5)
+                continue
+            return run_command(f"openclaw devices approve {request_id}", timeout)
+        except Exception as exc:
+            return subprocess.CompletedProcess(
+                args=f"openclaw devices approve {device_id}",
+                returncode=1,
+                stdout=list_proc.stdout,
+                stderr=f"Could not parse OpenClaw pending device list: {exc}\n",
+            )
+    return subprocess.CompletedProcess(
+        args=f"openclaw devices approve {device_id}",
+        returncode=1,
+        stdout="",
+        stderr=last_error,
+    )
+
 def resolve_openclaw_latest_approval(command, proc, timeout):
-    if command != "openclaw devices approve --latest" or proc.returncode == 0:
+    if proc.returncode == 0:
         return proc
-    combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-    match = re.search(r"openclaw\s+devices\s+approve\s+([0-9a-fA-F-]{36})(?:\s+--json)?", combined)
-    if not match:
-        return proc
-    return run_command(f"openclaw devices approve {match.group(1)}", timeout)
+    if command == "openclaw devices approve --latest":
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        match = re.search(r"openclaw\s+devices\s+approve\s+([0-9a-fA-F-]{36})(?:\s+--json)?", combined)
+        if match:
+            return run_command(f"openclaw devices approve {match.group(1)}", timeout)
+    match = re.fullmatch(r"openclaw\s+devices\s+approve\s+([0-9a-fA-F]{64})", command)
+    if match:
+        return approve_openclaw_device_id(match.group(1), timeout)
+    return proc
 
 def approve_latest_openclaw(timeout):
     last_error = None
@@ -703,7 +749,7 @@ def approve_latest_openclaw(timeout):
             return list_proc
         try:
             payload = json.loads(list_proc.stdout or "{}")
-            pending = payload.get("pending") or []
+            pending = pending_items(payload)
             if not pending:
                 last_error = "No pending OpenClaw pairing request.\n"
                 time.sleep(0.5)
