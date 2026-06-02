@@ -6,5 +6,10 @@ Public distribution repo for the Semsas pairing helper.
 
 ```bash
 curl -fsSL https://github.com/ayhanmalkoc/semsas-helper/releases/latest/download/install.sh | bash
-agentvoice-pair
+semsas-pair
 ```
+
+
+## Default behavior
+
+`semsas-pair` uses detected LAN/Tailscale URLs by default. Temporary public tunnels are opt-in with `semsas-pair --public-tunnel`.
